@@ -8,6 +8,11 @@ provider "aws" {
   region = var.aws_region
 }
 
+provider "aws" {
+  alias = "us-east"
+  region = "us-east-1"
+}
+
 resource "aws_s3_bucket" "b" {
   bucket = var.bucket_name
   acl    = "public-read"
@@ -25,40 +30,39 @@ resource "aws_s3_bucket" "b" {
 }
 EOF
 
-  force_destroy = true
-
   website {
     index_document = "index.html"
-    error_document = "index.html"
+    error_document = "error.html"
+
+    routing_rules = <<EOF
+[{
+    "Condition": {
+        "KeyPrefixEquals": "docs/"
+    },
+    "Redirect": {
+        "ReplaceKeyPrefixWith": "documents/"
+    }
+}]
+EOF
   }
+
 }
 
 locals {
   s3_origin_id = "myS3Origin"
 }
 
-// Certificate
 resource "aws_acm_certificate" "cert" {
+  provider = aws.us-east
   domain_name       = var.domain
   validation_method = "DNS"
-
-  tags = {
-    Environment = "test"
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
 }
 
-// Zone
-data "aws_route53_zone" "zone" {
+resource "aws_route53_zone" "example" {
   name         = var.domain
-  private_zone = false
 }
 
-// Route 53 Record
-resource "aws_route53_record" "www" {
+resource "aws_route53_record" "example" {
   for_each = {
     for dvo in aws_acm_certificate.cert.domain_validation_options : dvo.domain_name => {
       name   = dvo.resource_record_name
@@ -72,13 +76,13 @@ resource "aws_route53_record" "www" {
   records         = [each.value.record]
   ttl             = 60
   type            = each.value.type
-  zone_id         = data.aws_route53_zone.zone.zone_id
+  zone_id         = aws_route53_zone.example.zone_id
 }
 
-// Certificate Validation
 resource "aws_acm_certificate_validation" "cert" {
   certificate_arn         = aws_acm_certificate.cert.arn
-  validation_record_fqdns = [for record in aws_route53_record.www : record.fqdn]
+  validation_record_fqdns = [for record in aws_route53_record.example : record.fqdn]
+  provider = aws.us-east
 }
 
 // Cloudfront Distribution
@@ -142,7 +146,7 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
         forward = "none"
       }
     }
-
+  
     min_ttl                = 0
     default_ttl            = 86400
     max_ttl                = 31536000
@@ -153,7 +157,7 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
   restrictions {
     geo_restriction {
       restriction_type = "whitelist"
-      locations        = ["US", "CA", "GB", "DE"]
+      locations        = ["US", "CA", "GB", "DE", "AU"]
     }
   }
 
@@ -165,7 +169,7 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
 }
 
 resource "aws_route53_record" "record_a" {
-  zone_id = data.aws_route53_zone.zone.id
+  zone_id = aws_route53_zone.example.id
   name    = var.domain
   type    = "A"
 
